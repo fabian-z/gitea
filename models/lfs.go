@@ -13,6 +13,7 @@ type LFSMetaObject struct {
 	Size         int64     `xorm:"NOT NULL"`
 	RepositoryID int64     `xorm:"UNIQUE(s) INDEX NOT NULL"`
 	Existing     bool      `xorm:"-"`
+	// TODO add Validated bool with migration
 	Created      time.Time `xorm:"-"`
 	CreatedUnix  int64
 }
@@ -68,15 +69,15 @@ func NewLFSMetaObject(m *LFSMetaObject) (*LFSMetaObject, error) {
 	return m, sess.Commit()
 }
 
-// GetLFSMetaObjectByOid selects a LFSMetaObject entry from database by its OID.
+// GetLFSMetaObject selects a LFSMetaObject entry from database by its OID and repository.
 // It may return ErrLFSObjectNotExist or a database error. If the error is nil,
 // the returned pointer is a valid LFSMetaObject.
-func GetLFSMetaObjectByOid(oid string) (*LFSMetaObject, error) {
+func GetLFSMetaObject(oid string, repository *Repository) (*LFSMetaObject, error) {
 	if len(oid) == 0 {
 		return nil, ErrLFSObjectNotExist
 	}
 
-	m := &LFSMetaObject{Oid: oid}
+	m := &LFSMetaObject{Oid: oid, RepositoryID: repository.ID}
 	has, err := x.Get(m)
 	if err != nil {
 		return nil, err
@@ -86,22 +87,16 @@ func GetLFSMetaObjectByOid(oid string) (*LFSMetaObject, error) {
 	return m, nil
 }
 
-// RemoveLFSMetaObjectByOid removes a LFSMetaObject entry from database by its OID.
+// RemoveLFSMetaObject removes a LFSMetaObject entry from database.
 // It may return ErrLFSObjectNotExist or a database error.
-func RemoveLFSMetaObjectByOid(oid string) error {
-	if len(oid) == 0 {
-		return ErrLFSObjectNotExist
-	}
-
+func (object *LFSMetaObject) RemoveFromDB() error {
 	sess := x.NewSession()
 	defer sessionRelease(sess)
 	if err := sess.Begin(); err != nil {
 		return err
 	}
 
-	m := &LFSMetaObject{Oid: oid}
-
-	if _, err := sess.Delete(m); err != nil {
+	if _, err := sess.Delete(object); err != nil {
 		return err
 	}
 

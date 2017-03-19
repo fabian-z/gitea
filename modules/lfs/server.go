@@ -105,18 +105,20 @@ func GetContentHandler(ctx *context.Context) {
 
 	rv := unpack(ctx)
 
-	meta, err := models.GetLFSMetaObjectByOid(rv.Oid)
+	repositoryString := rv.User + "/" + rv.Repo
+	repository, err := models.GetRepositoryByRef(repositoryString)
 	if err != nil {
 		writeStatus(ctx, 404)
 		return
 	}
 
-	repository, err := models.GetRepositoryByID(meta.RepositoryID)
-
+	meta, err := models.GetLFSMetaObject(rv.Oid, repository)
 	if err != nil {
 		writeStatus(ctx, 404)
 		return
 	}
+
+	//TODO check if meta object is validated, refuse download otherwise
 
 	if !authenticate(ctx, repository, rv.Authorization, false) {
 		requireAuth(ctx)
@@ -155,24 +157,29 @@ func GetContentHandler(ctx *context.Context) {
 	}
 
 	ctx.Resp.WriteHeader(statusCode)
-	io.Copy(ctx.Resp, content)
-	content.Close()
+	_, err = io.Copy(ctx.Resp, content)
+	if err != nil {
+		log.Error(4, "Error during write of LFS object response: %v", err)
+	}
+	err = content.Close()
+	if err != nil {
+		log.Error(4, "Error closing LFS object file: %v", err)
+	}
 	logRequest(ctx.Req, statusCode)
 }
 
 // GetMetaHandler retrieves metadata about the object
 func GetMetaHandler(ctx *context.Context) {
-
 	rv := unpack(ctx)
 
-	meta, err := models.GetLFSMetaObjectByOid(rv.Oid)
+	repositoryString := rv.User + "/" + rv.Repo
+	repository, err := models.GetRepositoryByRef(repositoryString)
 	if err != nil {
 		writeStatus(ctx, 404)
 		return
 	}
 
-	repository, err := models.GetRepositoryByID(meta.RepositoryID)
-
+	meta, err := models.GetLFSMetaObject(rv.Oid, repository)
 	if err != nil {
 		writeStatus(ctx, 404)
 		return
@@ -219,7 +226,11 @@ func PostHandler(ctx *context.Context) {
 
 	if !authenticate(ctx, repository, rv.Authorization, true) {
 		requireAuth(ctx)
+		return
 	}
+
+	// TODO if object exists in content store and user has access, create validated object and sent 200 response.
+	// Otherwise create non-validated object and sent 202 response.
 
 	meta, err := models.NewLFSMetaObject(&models.LFSMetaObject{Oid: rv.Oid, Size: rv.Size, RepositoryID: repository.ID})
 
@@ -232,7 +243,7 @@ func PostHandler(ctx *context.Context) {
 
 	sentStatus := 202
 	contentStore := &ContentStore{BasePath: setting.LFS.ContentPath}
-	if meta.Existing && contentStore.Exists(meta) {
+	if contentStore.Exists(meta) {
 		sentStatus = 200
 	}
 	ctx.Resp.WriteHeader(sentStatus)
@@ -281,13 +292,16 @@ func BatchHandler(ctx *context.Context) {
 			return
 		}
 
-		meta, err := models.GetLFSMetaObjectByOid(object.Oid)
+		meta, err := models.GetLFSMetaObject(object.Oid, repository)
 
 		contentStore := &ContentStore{BasePath: setting.LFS.ContentPath}
 		if err == nil && contentStore.Exists(meta) { // Object is found and exists
 			responseObjects = append(responseObjects, Represent(object, meta, true, false))
 			continue
 		}
+
+		// TODO if object exists in content store and user has access, create validated object and return download response.
+		// Otherwise create non-validated object and return upload response.
 
 		// Object is not found
 		meta, err = models.NewLFSMetaObject(&models.LFSMetaObject{Oid: object.Oid, Size: object.Size, RepositoryID: repository.ID})
@@ -310,15 +324,14 @@ func BatchHandler(ctx *context.Context) {
 func PutHandler(ctx *context.Context) {
 	rv := unpack(ctx)
 
-	meta, err := models.GetLFSMetaObjectByOid(rv.Oid)
-
+	repositoryString := rv.User + "/" + rv.Repo
+	repository, err := models.GetRepositoryByRef(repositoryString)
 	if err != nil {
 		writeStatus(ctx, 404)
 		return
 	}
 
-	repository, err := models.GetRepositoryByID(meta.RepositoryID)
-
+	meta, err := models.GetLFSMetaObject(rv.Oid, repository)
 	if err != nil {
 		writeStatus(ctx, 404)
 		return
@@ -330,11 +343,23 @@ func PutHandler(ctx *context.Context) {
 	}
 
 	contentStore := &ContentStore{BasePath: setting.LFS.ContentPath}
+
+	if contentStore.Exists(meta) {
+		// TODO check upload hash
+		return
+	}
+
 	if err := contentStore.Put(meta, ctx.Req.Body().ReadCloser()); err != nil {
-		models.RemoveLFSMetaObjectByOid(rv.Oid)
+		log.Error(4, "Error saving LFS object to content store: %v", err)
+		errDb := meta.RemoveFromDB()
+		if errDb != nil {
+			log.Error(4, "Error removing LFS meta object from database: %v", err)
+		}
 		ctx.Resp.WriteHeader(500)
 		fmt.Fprintf(ctx.Resp, `{"message":"%s"}`, err)
 		return
+	} else {
+		// TODO set meta object to validated
 	}
 
 	logRequest(ctx.Req, 200)

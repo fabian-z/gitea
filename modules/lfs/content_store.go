@@ -37,6 +37,7 @@ func (s *ContentStore) Get(meta *models.LFSMetaObject, fromByte int64) (io.ReadC
 
 // Put takes a Meta object and an io.Reader and writes the content to the store.
 func (s *ContentStore) Put(meta *models.LFSMetaObject, r io.Reader) error {
+
 	path := filepath.Join(s.BasePath, transformKey(meta.Oid))
 	tmpPath := path + ".tmp"
 
